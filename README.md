@@ -9,5 +9,7 @@ amqp.QueueDeclare("queue name")
 
 amqp.Publish("queue name", "body") 
 
-amqp.Consumer("queue name", "consumer name", 10, false, email.WorkerEmail)", "consumer name", 10, false, email.WorkerEmail)
+amqp.Consumer("queue name", "consumer name", 10, false, func(payload []byte) bool {
+    return true // ACK
+})
 ```
