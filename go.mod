@@ -1,4 +1,4 @@
-module github.com/m4rc0nd35/Cooruja-Broker
+module github.com/m4rc0nd35/devcloud-broker
 
 go 1.20
 
