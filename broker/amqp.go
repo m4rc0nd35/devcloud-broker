@@ -176,13 +176,15 @@ func (c *rabbitMQ) Consumer(queue, consumerName string, prefetch int, requeue bo
 
 	go func() {
 		for d := range msgs {
-			if success := callback(d.Body); !success {
-				if err := channel.Nack(d.DeliveryTag, false, requeue); err != nil {
-					log.Println(err)
+			go func(delivery amqp.Delivery) {
+				success := callback(delivery.Body)
+
+				if !success {
+					delivery.Nack(false, requeue)
+				} else {
+					delivery.Ack(false)
 				}
-			} else {
-				channel.Ack(d.DeliveryTag, false)
-			}
+			}(d)
 		}
 	}()
 
