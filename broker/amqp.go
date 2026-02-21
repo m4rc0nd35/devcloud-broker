@@ -149,6 +149,66 @@ func (c *rabbitMQ) Publish(queue string, txt string) error {
 }
 
 func (c *rabbitMQ) Consumer(queue, consumerName string, prefetch int, requeue bool, callback func([]byte) bool) error {
+
+	go func() {
+		for {
+			if c.Connection.IsClosed() {
+				time.Sleep(time.Second)
+				continue
+			}
+
+			ch, err := c.Connection.Channel()
+			if err != nil {
+				time.Sleep(time.Second)
+				continue
+			}
+
+			ch.Qos(prefetch, 0, false)
+
+			msgs, err := ch.Consume(queue, consumerName, false, false, false, false, nil)
+			if err != nil {
+				ch.Close()
+				time.Sleep(time.Second)
+				continue
+			}
+
+			closeChan := make(chan *amqp.Error)
+			ch.NotifyClose(closeChan)
+
+			log.Println("consumer started")
+
+			// processamento
+			done := make(chan bool)
+
+			go func() {
+				for d := range msgs {
+					success := callback(d.Body)
+
+					if success {
+						d.Ack(false)
+					} else {
+						d.Nack(false, requeue)
+					}
+				}
+				done <- true
+			}()
+
+			// espera morrer
+			select {
+			case err := <-closeChan:
+				log.Println("channel closed", err)
+			case <-done:
+				log.Println("delivery channel closed")
+			}
+
+			ch.Close()
+			time.Sleep(time.Second)
+		}
+	}()
+	return nil
+}
+
+func (c *rabbitMQ) ConsumerOLD(queue, consumerName string, prefetch int, requeue bool, callback func([]byte) bool) error {
 	/* Check connection AMQP */
 	if c.Connection.IsClosed() {
 		time.Sleep(time.Second * 1)
