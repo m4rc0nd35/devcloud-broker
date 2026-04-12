@@ -12,6 +12,13 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
+type QueueDeclareRetry struct {
+	Queue        string
+	RoutingKey   string
+	Exchange     string
+	DelaySeconds int64
+}
+
 type rabbitMQ struct {
 	Connection *amqp.Connection
 	tls        bool
@@ -126,6 +133,78 @@ func (c *rabbitMQ) QueueDeclare(queue string) error {
 	return nil
 }
 
+// QueueDeclareRetry declares a main durable queue, and a corresponding retry queue with dead-letter configuration.
+// The retry queue uses a TTL (specified by delayQueue in milliseconds). After this TTL, messages are dead-lettered to the main exchange and routing key.
+// - queue: the main queue name
+// - routingKey: the routing key for binding and dead-letter
+// - exchange: the main exchange (must exist or will be created as a durable direct exchange)
+// - delayQueue: message TTL for the retry queue in milliseconds
+func (c *rabbitMQ) QueueDeclareRetry(payload QueueDeclareRetry) error {
+	/* Check connection AMQP */
+	if c.Connection.IsClosed() {
+		log.Println("Connection is closed")
+		return errors.New("connection is closed")
+	}
+
+	channel, err := c.Connection.Channel()
+	if err != nil {
+		return err
+	}
+	defer channel.Close()
+
+	err = channel.ExchangeDeclare(
+		payload.Exchange,
+		"direct",
+		true,
+		false,
+		false,
+		false,
+		nil,
+	)
+	if err != nil {
+		channel.Close()
+		return fmt.Errorf("ExchangeDeclare: %s", err)
+	}
+
+	_, err = channel.QueueDeclare(payload.Queue, true, false, false, false, nil)
+	if err != nil {
+		channel.Close()
+		return fmt.Errorf("QueueDeclare: %s", err)
+	}
+
+	err = channel.QueueBind(payload.Queue, payload.RoutingKey, payload.Exchange, false, nil)
+	if err != nil {
+		channel.Close()
+		return fmt.Errorf("QueueBind: %s", err)
+	}
+
+	// Retry 5s
+	_, err = channel.QueueDeclare(
+		fmt.Sprintf("%s.retry", payload.Queue),
+		true,
+		false,
+		false,
+		false,
+		amqp.Table{
+			"x-message-ttl":             payload.DelaySeconds * 1000,
+			"x-dead-letter-exchange":    payload.Exchange,
+			"x-dead-letter-routing-key": payload.RoutingKey,
+		},
+	)
+
+	// DLQ final
+	_, err = channel.QueueDeclare(
+		fmt.Sprintf("%s.dlq", payload.Queue),
+		true,
+		false,
+		false,
+		false,
+		nil,
+	)
+
+	return nil
+}
+
 func (c *rabbitMQ) Publish(queue string, txt string) error {
 	/* Check connection AMQP */
 	if c.Connection.IsClosed() {
@@ -189,6 +268,93 @@ func (c *rabbitMQ) Consumer(queue, consumerName string, prefetch int, requeue bo
 					} else {
 						d.Nack(false, requeue)
 					}
+				}
+				done <- true
+			}()
+
+			// espera morrer
+			select {
+			case err := <-closeChan:
+				log.Println("channel closed", err)
+			case <-done:
+				log.Println("delivery channel closed")
+			}
+
+			ch.Close()
+			time.Sleep(time.Second)
+		}
+	}()
+	return nil
+}
+
+func (c *rabbitMQ) ConsumerRetry(queue, consumerName string, retryQueue int64, prefetch int, requeue bool, callback func([]byte) bool) error {
+
+	go func() {
+		for {
+			if c.Connection.IsClosed() {
+				time.Sleep(time.Second)
+				continue
+			}
+
+			ch, err := c.Connection.Channel()
+			if err != nil {
+				time.Sleep(time.Second)
+				continue
+			}
+
+			ch.Qos(prefetch, 0, false)
+
+			msgs, err := ch.Consume(queue, consumerName, false, false, false, false, nil)
+			if err != nil {
+				ch.Close()
+				time.Sleep(time.Second)
+				continue
+			}
+
+			closeChan := make(chan *amqp.Error)
+			ch.NotifyClose(closeChan)
+
+			log.Println("consumer started")
+
+			// processamento
+			done := make(chan bool)
+
+			go func() {
+				for d := range msgs {
+					retryCount := int64(0)
+					if val, ok := d.Headers["x-retry-count"]; ok {
+						retryCount = val.(int64)
+					}
+
+					success := callback(d.Body)
+
+					if !success && retryCount < retryQueue {
+						err = ch.PublishWithContext(context.TODO(), "", fmt.Sprintf("%s.retry", queue), false, false, amqp.Publishing{
+							ContentType: "application/json",
+							Body:        d.Body,
+							Headers: amqp.Table{
+								"x-retry-count": retryCount + 1,
+							},
+						})
+						if err != nil {
+							log.Printf("Erro ao publicar mensagem: %s", err)
+						}
+					} else if !success && retryCount >= retryQueue {
+						err = ch.PublishWithContext(context.TODO(), "", fmt.Sprintf("%s.dlq", queue), false, false, amqp.Publishing{
+							ContentType: "application/json",
+							Body:        d.Body,
+							Headers: amqp.Table{
+								"x-queue-name":  queue,
+								"x-routing-key": d.RoutingKey,
+								"x-exchange":    d.Exchange,
+							},
+						})
+						if err != nil {
+							log.Printf("Erro ao publicar mensagem: %s", err)
+						}
+					}
+
+					d.Ack(false)
 				}
 				done <- true
 			}()
