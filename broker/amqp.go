@@ -133,6 +133,51 @@ func (c *rabbitMQ) QueueDeclare(queue string) error {
 	return nil
 }
 
+func (c *rabbitMQ) QueueDeclareExchange(queue, routingKey, exchange string, durable, autoDelete bool) error {
+	channel, err := c.Connection.Channel()
+	if err != nil {
+		return err
+	}
+	defer channel.Close()
+
+	_, err = channel.QueueDeclare(queue, durable, autoDelete, true, false, nil)
+	if err != nil {
+		return fmt.Errorf("QueueDeclare: %w", err)
+	}
+
+	if routingKey != "" {
+		err = channel.QueueBind(queue, routingKey, exchange, false, nil)
+		if err != nil {
+			channel.Close()
+			return fmt.Errorf("QueueBind: %s", err)
+		}
+	}
+
+	return nil
+}
+
+func (c *rabbitMQ) PublishExchange(exchange, routingKey string, txt string) error {
+	/* Check connection AMQP */
+	if c.Connection.IsClosed() {
+		return errors.New("connection is clsosed")
+	}
+
+	channel, err := c.Connection.Channel()
+	if err != nil {
+		return err
+	}
+	defer channel.Close()
+
+	err = channel.PublishWithContext(context.TODO(), exchange, routingKey, false, false,
+		amqp.Publishing{ContentType: "application/json", Body: []byte(txt)})
+	if err != nil {
+		channel.Close()
+		return fmt.Errorf("publish: %s", err)
+	}
+
+	return nil
+}
+
 // QueueDeclareRetry declares a main durable queue, and a corresponding retry queue with dead-letter configuration.
 // The retry queue uses a TTL (specified by delayQueue in milliseconds). After this TTL, messages are dead-lettered to the main exchange and routing key.
 // - queue: the main queue name
