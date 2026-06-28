@@ -133,7 +133,29 @@ func (c *rabbitMQ) QueueDeclare(queue string) error {
 	return nil
 }
 
-func (c *rabbitMQ) QueueDeclareExchange(queue, routingKey, exchange string, durable, autoDelete bool) error {
+/*
+	ExchangeDeclare declares an exchange.
+
+- durable: if the exchange should be durable
+- autoDelete: if the exchange should be deleted when no longer in use
+- exchange: the exchange name
+- exchangeType: the exchange type
+*/
+func (c *rabbitMQ) ExchangeDeclare(exchange, exchangeType string, durable, autoDelete bool) error {
+	channel, err := c.Connection.Channel()
+	if err != nil {
+		return err
+	}
+	defer channel.Close()
+
+	err = channel.ExchangeDeclare(exchange, exchangeType, durable, autoDelete, false, false, nil)
+	if err != nil {
+		return fmt.Errorf("ExchangeDeclare: %w", err)
+	}
+	return nil
+}
+
+func (c *rabbitMQ) QueueDeclareAndBind(queue, routingKey, exchange string, durable, autoDelete bool) error {
 	channel, err := c.Connection.Channel()
 	if err != nil {
 		return err
