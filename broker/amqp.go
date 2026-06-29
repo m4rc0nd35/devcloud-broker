@@ -162,7 +162,7 @@ func (c *rabbitMQ) QueueDeclareAndBind(queue, routingKey, exchange string, durab
 	}
 	defer channel.Close()
 
-	_, err = channel.QueueDeclare(queue, durable, autoDelete, true, false, nil)
+	_, err = channel.QueueDeclare(queue, durable, autoDelete, false, false, nil)
 	if err != nil {
 		return fmt.Errorf("QueueDeclare: %w", err)
 	}
